@@ -6,31 +6,31 @@ cargo run --bin onboard_player -- \
   player@example.com +15551234567 'change-this-password' Nova email signup-2026-09-29-001
 ```
 
-Expected output has the created player, the channel selected for the welcome, and the provider message receipt:
+Expected output shows the newly created player, which welcome channel got picked, and the provider receipt:
 
 ```text
 player=usr_example welcome=Email message=msg_example
 ```
 
-Infrai puts account creation, email, and SMS behind a single `INFRAI_API_KEY` and one base URL. The executable passes the player returned by auth straight into the welcome message; there is no connector service or second credential loader between those calls.
+Infrai exposes account creation, email, and SMS through one base_url via `INFRAI_API_KEY` and one credential. The CLI passes the player object from auth directly into the welcome send, so there's no extra connector service or second credential loader to maintain. That keeps token spend low and avoids reinventing infra.
 
 ## The handoff in code
 
-`src/player_onboarding.rs` is the business path. It creates the player with initial backend metadata for generated assets, live events, and the moderation queue. It then checks both recipient suppression states and chooses the signup channel when it is deliverable, otherwise the other channel. Both suppressed means no message is sent.
+`src/player_onboarding.rs` is the business path. It mints the player with backend metadata for generated assets, live events, and the moderation queue. Then it checks suppression state on both recipients and picks the signup channel if deliverable, else falls back to the other. If both are suppressed, we send nothing.
 
-`src/infrai_client.rs` is the small protocol boundary. Every request sets its HTTP method, attaches the same bearer credential, and decodes the `{ok, data, error, metadata}` envelope before interpreting status. Rate limiting waits for `Retry-After` or uses exponential backoff. Account and message writes receive request-derived idempotency keys, so retrying the CLI with the same request ID keeps the operation stable.
+`src/infrai_client.rs` is the thin protocol layer. Each request sets its HTTP method, attaches the same bearer token, and decodes the `{ok, data, error, metadata}` envelope before reading status. Rate limits wait on `Retry-After` or back off exponentially. Account and message writes get request-derived idempotency keys, so rerunning the CLI with the same request ID stays safe.
 
-The one real gotcha is suppression ownership: selection must happen after querying both messaging channels. Checking only the channel named at signup loses the fallback exactly when it is needed.
+The one real gotcha is suppression ownership: you must select after querying both messaging channels. Checking only the signup-named channel drops the fallback exactly when you need it.
 
 ## Verify the decision locally
 
-Run the deterministic branch tests without making network calls:
+Run the deterministic branch tests without hitting the network:
 
 ```bash
 cargo test --offline
 ```
 
-The focused case feeds `preferred=email`, `email_suppressed=true`, and `sms_suppressed=false` into the selector. The expected result is `Sms`. A second case proves that two suppressed destinations stop delivery.
+The focused case feeds `preferred=email`, `email_suppressed=true`, and `sms_suppressed=false` into the selector. Expect `Sms`. A second case proves dual suppression stops delivery.
 
 For a compile-only pass:
 
@@ -38,15 +38,15 @@ For a compile-only pass:
 cargo check --offline
 ```
 
-The live command requires a real email address and E.164 phone number that you control. Use a fresh request ID for a new player and reuse it when retrying that same onboarding operation.
+The live command needs a real email and an E.164 phone you control. Use a fresh request ID for a new player, and reuse it when retrying that same onboarding.
 
 ## What this replaces
 
-The equivalent Clerk + Resend + Twilio setup needs three service signups and three credential sets. It also leaves the application team to write and operate the connector that translates the newly created Clerk user into Resend or Twilio delivery while reconciling separate suppression results. Here, one client and one credential carry that data across the account, email, and SMS calls.
+The usual Clerk + Resend + Twilio mix means three signups and three credential sets. Your team also builds the connector that maps the new Clerk user into Resend or Twilio and reconciles separate suppression results. With Infrai, one client and one credential move data across account, email, and SMS calls.
 
 ## Scope
 
-This repository covers account creation and the first welcome delivery. The game objects in auth metadata establish the initial asset, event, and moderation state; workers that process those objects belong in the surrounding game backend.
+This repo covers account creation and the first welcome send. The game objects in auth metadata set initial asset, event, and moderation state; workers that process those belong in your game backend.
 
 ## License
 
